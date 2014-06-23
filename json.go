@@ -118,7 +118,6 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Do json deserialization of body.
 	if deserialize {
 		dec := json.NewDecoder(r.Body)
-		defer r.Body.Close()
 
 		if err := dec.Decode(deserializeTo.Interface()); err != nil {
 			writeJSONError(w, j.logger, JSONErr{
@@ -127,6 +126,7 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		r.Body.Close()
 	}
 
 	out := j.fn.Call(in)
