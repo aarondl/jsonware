@@ -1,3 +1,8 @@
+/*
+Package jsonware has a middleware setup for doing RESTful reqeuests with net/http.
+It makes it easy to unobtrusively serialize and deserialize json in a type safe
+manner, and handle errors from the internal handlers including logging.
+*/
 package jsonware
 
 import (
@@ -58,7 +63,12 @@ the handler.
 */
 type JSONErr struct {
 	Status int
-	error
+	Err    error
+}
+
+// Error returns Error() from the internal error.
+func (j JSONErr) Error() string {
+	return j.Err.Error()
 }
 
 // ServeHTTP serves an http response, see JSONHandler documentation for details.

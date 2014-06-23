@@ -82,7 +82,7 @@ func errHandler1(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 
 // 200 JSONErr
 func errHandler2(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return nil, JSONErr{error: errors.New("validation error")}
+	return nil, JSONErr{Err: errors.New("validation error")}
 }
 
 // handled json error
