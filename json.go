@@ -14,17 +14,19 @@ import (
 	"strings"
 )
 
-type Thing struct {
-	Name string `json:"name"`
-}
-
-var count = 0
-
 /*
 JSONHandler handles json api endpoint restful requests. It can be constructed
 by passing a suitable function into the JSON function.
 
-JSONHandler
+Error handling is handled differently depending on whether or not JSONErr was
+used to report the error. See JSONErr documentation to understand how to control
+error handling.
+
+To log cloaked errors, use the Log() function to set an io.Writer to log to
+when reporting a real internal server error.
+
+	// Register a JSONHandler.
+	http.Handle("/", JSON(myHandler).Log(myLogger))
 */
 type JSONHandler struct {
 	logger io.Writer
@@ -54,7 +56,7 @@ the handler.
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
-		return nil, JSONErr{error: errors.New("hi")} // 200 Response with error output to client
+		return nil, JSONErr{Err: errors.New("hi")} // 200 Response with error output to client
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +184,7 @@ func writeJSONError(w http.ResponseWriter, logger io.Writer, err error) {
 JSON changes a function into a JSONHandler.
 Acceptable forms of the input function:
 
-	GET (Note: all variant return types also work with POST/PATCH/PUT
+	GET (Note: all variant return types also work with POST/PATCH/PUT)
 	func Fn(w http.ResponseWriter, r *http.Request) (interface{}, error)
 	func Fn(w http.ResponseWriter, r *http.Request) (*MyStruct, error)
 	func Fn(w http.ResponseWriter, r *http.Request) ([]*MyStruct, error)
