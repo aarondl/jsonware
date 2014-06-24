@@ -60,12 +60,21 @@ the handler.
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
-		return nil, JSONErr{400, errors.New("hi")} // 400 Response with error output to client
+		return nil, JSONErr{Status: 400, Err: errors.New("hi")} // 400 Response with error output to client
+	}
+
+	func handler(w http.ResponseWriter, r *http.Request) {
+		return nil, JSONErr{
+			Status: 400,
+			Err: errors.New("hi")
+			Reason: []string{"anything", "serializable", "to", "json"},
+		} // 400 Response with error output to client
 	}
 */
 type JSONErr struct {
 	Status int
 	Err    error
+	Reason interface{}
 }
 
 // Error returns Error() from the internal error.
@@ -93,8 +102,8 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fallthrough
 	case !deserialize && isDataMethod(r.Method):
 		writeJSONError(w, j.logger, JSONErr{
-			http.StatusBadRequest,
-			fmt.Errorf("invalid http method to this endpoint: %s", r.Method),
+			Status: http.StatusBadRequest,
+			Err:    fmt.Errorf("invalid http method to this endpoint: %s", r.Method),
 		})
 		return
 	}
@@ -121,8 +130,8 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if err := dec.Decode(deserializeTo.Interface()); err != nil {
 			writeJSONError(w, j.logger, JSONErr{
-				http.StatusBadRequest,
-				fmt.Errorf("could not deserialize json request body"),
+				Status: http.StatusBadRequest,
+				Err:    fmt.Errorf("could not deserialize json request body"),
 			})
 			return
 		}
@@ -142,8 +151,8 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		if err := enc.Encode(out[0].Interface()); err != nil {
 			writeJSONError(w, j.logger, JSONErr{
-				http.StatusInternalServerError,
-				fmt.Errorf("problem preparing response"),
+				Status: http.StatusInternalServerError,
+				Err:    fmt.Errorf("problem preparing response"),
 			})
 			return
 		}
@@ -155,12 +164,6 @@ func isDataMethod(method string) bool {
 	return method == "POST" || method == "PATCH" || method == "PUT"
 }
 
-// jsonSanitizer does basic sanitization (except unicode) of json values.
-var jsonSanitizer = strings.NewReplacer(
-	`"`, `\"`, `\`, `\\`, `/`, `\/`, "\x08", "\\b",
-	"\x12", "\\f", "\n", "\\n", "\r", "\\r", "\t", "\\t",
-)
-
 // writeJSONError writes an error out to the response.
 func writeJSONError(w http.ResponseWriter, logger io.Writer, err error) {
 	switch e := err.(type) {
@@ -170,7 +173,22 @@ func writeJSONError(w http.ResponseWriter, logger io.Writer, err error) {
 		} else {
 			w.WriteHeader(http.StatusOK)
 		}
-		fmt.Fprintf(w, `{ "error": "%v" }`, jsonSanitizer.Replace(e.Error()))
+
+		toJSON := map[string]interface{}{
+			"error": e.Err.Error(),
+		}
+		if e.Reason != nil {
+			toJSON["reason"] = e.Reason
+		}
+
+		enc := json.NewEncoder(w)
+		if err = enc.Encode(toJSON); err != nil {
+			if logger != nil {
+				fmt.Fprintf(logger, "failed to serialize JSONErr: %v", err)
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `{ "error": "an internal server error occurred" }`)
+		}
 	default:
 		if logger != nil {
 			fmt.Fprintf(logger, "internal error: %v", err)

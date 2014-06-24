@@ -87,7 +87,16 @@ func errHandler2(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 
 // handled json error
 func errHandler3(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return nil, JSONErr{http.StatusBadRequest, errors.New("ugly request")}
+	return nil, JSONErr{Status: http.StatusBadRequest, Err: errors.New("ugly request")}
+}
+
+// handled json error with serialized reason
+func errHandler4(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	return nil, JSONErr{
+		Status: http.StatusBadRequest,
+		Err:    errors.New("ugly request"),
+		Reason: map[string]string{"problem": "occurred"},
+	}
 }
 
 func TestJSON_Serializing(t *testing.T) {
@@ -190,6 +199,7 @@ func TestJSON_Errors(t *testing.T) {
 		{errHandler1, 500, "an internal server error", "internal error: error occurred"},
 		{errHandler2, 200, "validation error", ""},
 		{errHandler3, 400, "ugly request", ""},
+		{errHandler4, 400, `{"error":"ugly request","reason":{"problem":"occurred"}`, ""},
 	}
 
 	log := &bytes.Buffer{}
