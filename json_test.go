@@ -52,6 +52,11 @@ func testHandler7(w http.ResponseWriter, r *http.Request) (map[string]*testType,
 	return map[string]*testType{"hi": &testType{"hi"}}, nil
 }
 
+// return unserializable
+func testHandler8(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	return map[int]string{}, nil
+}
+
 // Params Arity
 func badHandler1() (interface{}, error) { return nil, nil }
 
@@ -82,24 +87,24 @@ func errHandler1(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 
 // 200 JSONErr
 func errHandler2(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return nil, JSONErr{Err: errors.New("validation error")}
+	return nil, Err{Err: errors.New("validation error")}
 }
 
 // handled json error
 func errHandler3(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return nil, JSONErr{Status: http.StatusBadRequest, Err: errors.New("ugly request")}
+	return nil, Err{Status: http.StatusBadRequest, Err: errors.New("ugly request")}
 }
 
 // handled json error with serialized reason
 func errHandler4(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return nil, JSONErr{
+	return nil, Err{
 		Status: http.StatusBadRequest,
 		Err:    errors.New("ugly request"),
 		Reason: map[string]string{"problem": "occurred"},
 	}
 }
 
-func TestJSON_Serializing(t *testing.T) {
+func TestSerializing(t *testing.T) {
 	t.Parallel()
 
 	var tests = []struct {
@@ -117,6 +122,7 @@ func TestJSON_Serializing(t *testing.T) {
 		{testHandler5, "POST", 200, `{ "friend": { "name": "hi" }}`, `hi`},
 		{testHandler6, "GET", 200, ``, `[{"name":"hi"}]`},
 		{testHandler7, "GET", 200, ``, `{"hi":{"name":"hi"}}`},
+		{testHandler8, "GET", 500, ``, `{"error":"problem preparing response"}`},
 	}
 
 	for i, test := range tests {
@@ -124,7 +130,7 @@ func TestJSON_Serializing(t *testing.T) {
 		req, _ := http.NewRequest(test.method, "/", bytes.NewBufferString(test.reqbody))
 		req.Header = http.Header{"Accept": []string{"*/*"}}
 
-		j := JSON(test.handler)
+		j := Handler(test.handler)
 		j.ServeHTTP(res, req)
 
 		if res.Code != test.status {
@@ -139,7 +145,7 @@ func TestJSON_Serializing(t *testing.T) {
 	}
 }
 
-func TestJSON_RequestFilter(t *testing.T) {
+func TestRequestFilter(t *testing.T) {
 	t.Parallel()
 
 	normHeader := http.Header{
@@ -158,10 +164,13 @@ func TestJSON_RequestFilter(t *testing.T) {
 	}{
 		{testHandler1, "GET", 400, badAccept, "json-accepting"},
 		{testHandler1, "GET", 400, normHeader, "invalid http method"},
+		{testHandler1, "DELETE", 400, badAccept, "json-accepting"},
+		{testHandler1, "DELETE", 400, normHeader, "invalid http method"},
 		{testHandler1, "POST", 200, normHeader, "hi"},
 		{testHandler1, "PUT", 200, normHeader, "hi"},
 		{testHandler1, "PATCH", 200, normHeader, "hi"},
 		{(&testController{"hello"}).testHandler2, "GET", 200, normHeader, "hello"},
+		{(&testController{"hello"}).testHandler2, "DELETE", 200, normHeader, "hello"},
 		{(&testController{"hello"}).testHandler2, "POST", 400, normHeader, "invalid http method"},
 		{(&testController{"hello"}).testHandler2, "PUT", 400, normHeader, "invalid http method"},
 		{(&testController{"hello"}).testHandler2, "PATCH", 400, normHeader, "invalid http method"},
@@ -172,7 +181,7 @@ func TestJSON_RequestFilter(t *testing.T) {
 		req, _ := http.NewRequest(test.method, "/", bytes.NewBufferString(`{ "name": "hi" }`))
 		req.Header = test.headers
 
-		j := JSON(test.handler)
+		j := Handler(test.handler)
 		j.ServeHTTP(res, req)
 
 		if res.Code != test.status {
@@ -187,7 +196,7 @@ func TestJSON_RequestFilter(t *testing.T) {
 	}
 }
 
-func TestJSON_Errors(t *testing.T) {
+func TestErrors(t *testing.T) {
 	t.Parallel()
 
 	var tests = []struct {
@@ -210,7 +219,7 @@ func TestJSON_Errors(t *testing.T) {
 		req.Header = http.Header{"Accept": []string{"*/*"}}
 
 		log.Reset()
-		j := JSON(test.handler).Log(log)
+		j := Handler(test.handler).Log(log)
 		j.ServeHTTP(res, req)
 
 		if res.Code != test.status {
@@ -230,7 +239,58 @@ func TestJSON_Errors(t *testing.T) {
 	}
 }
 
-func TestJSON_Panics(t *testing.T) {
+func TestErr_Err(t *testing.T) {
+	t.Parallel()
+
+	err := Err{Err: errors.New("test")}
+	if e := err.Error(); e != "test" {
+		t.Error("Value was wrong:", e)
+	}
+}
+
+func TestErrSerializeErr(t *testing.T) {
+	t.Parallel()
+
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header = http.Header{"Accept": []string{"*/*"}}
+
+	log := &bytes.Buffer{}
+	Log(log)
+	defer Log(nil)
+
+	j := Handler(func(_ http.ResponseWriter, r *http.Request) (interface{}, error) {
+		return nil, Err{Status: 400, Err: errors.New("something"), Reason: map[int]string{}}
+	})
+	j.ServeHTTP(res, req)
+
+	if l := log.String(); !strings.Contains(l, "failed to serialize err: json: unsupported type: map[int]string") {
+		t.Error("Log was wrong:", l)
+	}
+
+	if res.Code != 500 {
+		t.Error("Expected a 500 status:", res.Code)
+	}
+}
+
+func TestGlobalLog(t *testing.T) {
+	res := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header = http.Header{"Accept": []string{"*/*"}}
+
+	log := &bytes.Buffer{}
+	Log(log)
+	defer Log(nil)
+
+	j := Handler(errHandler1)
+	j.ServeHTTP(res, req)
+
+	if l := log.String(); !strings.Contains(l, "internal error: error occurred") {
+		t.Error("Log was wrong:", l)
+	}
+}
+
+func TestHandler(t *testing.T) {
 	t.Parallel()
 
 	var tests = []struct {
@@ -274,6 +334,6 @@ func testPanic(handler interface{}) (didPanic bool, msg string) {
 		}
 	}()
 
-	JSON(handler)
+	Handler(handler)
 	return
 }

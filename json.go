@@ -6,6 +6,7 @@ manner, and handle errors from the internal handlers including logging.
 package jsonware
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,19 +15,28 @@ import (
 	"strings"
 )
 
+var globalLogger io.Writer
+
+// Log sets the global logger for cloaked errors. Not safe for use by multiple
+// goroutines, do this before your http server has been started.
+func Log(logger io.Writer) {
+	globalLogger = logger
+}
+
 /*
 JSONHandler handles json api endpoint restful requests. It can be constructed
 by passing a suitable function into the JSON function.
 
-Error handling is handled differently depending on whether or not JSONErr was
-used to report the error. See JSONErr documentation to understand how to control
+Error handling is handled differently depending on whether or not Err was
+used to report the error. See Err documentation to understand how to control
 error handling.
 
-To log cloaked errors, use the Log() function to set an io.Writer to log to
-when reporting a real internal server error.
+Cloaked errors are handled by reporting a generic error to the client and
+logging the error locally. The log can be set globally via jsonware.Log() or
+on each individual handler as an override by the .Log() function there.
 
 	// Register a JSONHandler.
-	http.Handle("/", JSON(myHandler).Log(myLogger))
+	http.Handle("/", Handler(myHandler).Log(myLogger))
 */
 type JSONHandler struct {
 	logger io.Writer
@@ -41,7 +51,7 @@ func (j *JSONHandler) Log(logger io.Writer) *JSONHandler {
 }
 
 /*
-JSONErr can be used in a JSONHandler to override the error mechanism in
+Err can be used in a JSONHandler to override the error mechanism in
 JSONHandler's ServeHTTP method. If a status is set it will obey it,
 otherwise it will assume 200 OK. The error message will be relayed to the
 client. If you wish to use a general server error, simply return error from
@@ -56,30 +66,30 @@ the handler.
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
-		return nil, JSONErr{Err: errors.New("hi")} // 200 Response with error output to client
+		return nil, Err{Err: errors.New("hi")} // 200 Response with error output to client
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
-		return nil, JSONErr{Status: 400, Err: errors.New("hi")} // 400 Response with error output to client
+		return nil, Err{Status: 400, Err: errors.New("hi")} // 400 Response with error output to client
 	}
 
 	func handler(w http.ResponseWriter, r *http.Request) {
-		return nil, JSONErr{
+		return nil, Err{
 			Status: 400,
 			Err: errors.New("hi")
 			Reason: []string{"anything", "serializable", "to", "json"},
 		} // 400 Response with error output to client
 	}
 */
-type JSONErr struct {
+type Err struct {
 	Status int
 	Err    error
 	Reason interface{}
 }
 
 // Error returns Error() from the internal error.
-func (j JSONErr) Error() string {
-	return j.Err.Error()
+func (e Err) Error() string {
+	return e.Err.Error()
 }
 
 // ServeHTTP serves an http response, see JSONHandler documentation for details.
@@ -101,7 +111,7 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case deserialize && !isDataMethod(r.Method):
 		fallthrough
 	case !deserialize && isDataMethod(r.Method):
-		writeJSONError(w, j.logger, JSONErr{
+		writeError(w, j.logger, Err{
 			Status: http.StatusBadRequest,
 			Err:    fmt.Errorf("invalid http method to this endpoint: %s", r.Method),
 		})
@@ -129,7 +139,7 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dec := json.NewDecoder(r.Body)
 
 		if err := dec.Decode(deserializeTo.Interface()); err != nil {
-			writeJSONError(w, j.logger, JSONErr{
+			writeError(w, j.logger, Err{
 				Status: http.StatusBadRequest,
 				Err:    fmt.Errorf("could not deserialize json request body"),
 			})
@@ -142,7 +152,7 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Handle error return value
 	if !out[1].IsNil() {
-		writeJSONError(w, j.logger, out[1].Interface().(error))
+		writeError(w, j.logger, out[1].Interface().(error))
 		return
 	}
 
@@ -150,7 +160,7 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !out[0].IsNil() {
 		enc := json.NewEncoder(w)
 		if err := enc.Encode(out[0].Interface()); err != nil {
-			writeJSONError(w, j.logger, JSONErr{
+			writeError(w, j.logger, Err{
 				Status: http.StatusInternalServerError,
 				Err:    fmt.Errorf("problem preparing response"),
 			})
@@ -159,21 +169,22 @@ func (j JSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// isDataMethod returns true if method is one of POST PUT or PATCH
 func isDataMethod(method string) bool {
-	return method == "POST" || method == "PATCH" || method == "PUT"
+	return method != "GET" && method != "DELETE"
 }
 
-// writeJSONError writes an error out to the response.
-func writeJSONError(w http.ResponseWriter, logger io.Writer, err error) {
-	switch e := err.(type) {
-	case JSONErr:
-		if e.Status != 0 {
-			w.WriteHeader(e.Status)
-		} else {
-			w.WriteHeader(http.StatusOK)
+// writeError writes an error out to the response.
+func writeError(w http.ResponseWriter, logger io.Writer, err error) {
+	logit := func(format string, args ...interface{}) {
+		if logger != nil {
+			fmt.Fprintf(logger, format, args...)
+		} else if globalLogger != nil {
+			fmt.Fprintf(globalLogger, format, args...)
 		}
+	}
 
+	switch e := err.(type) {
+	case Err:
 		toJSON := map[string]interface{}{
 			"error": e.Err.Error(),
 		}
@@ -181,28 +192,33 @@ func writeJSONError(w http.ResponseWriter, logger io.Writer, err error) {
 			toJSON["reason"] = e.Reason
 		}
 
-		enc := json.NewEncoder(w)
+		buf := &bytes.Buffer{}
+		enc := json.NewEncoder(buf)
 		if err = enc.Encode(toJSON); err != nil {
-			if logger != nil {
-				fmt.Fprintf(logger, "failed to serialize JSONErr: %v", err)
-			}
+			logit("failed to serialize err: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			io.WriteString(w, `{ "error": "an internal server error occurred" }`)
+			io.WriteString(w, `{"error":"an internal server error occurred"}`)
+			return
+		}
+
+		if e.Status != 0 {
+			w.WriteHeader(e.Status)
+		}
+		if _, err = io.Copy(w, buf); err != nil {
+			logit("failed to send response: %v", err)
 		}
 	default:
-		if logger != nil {
-			fmt.Fprintf(logger, "internal error: %v", err)
-		}
+		logit("internal error: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, `{ "error": "an internal server error occurred" }`)
+		io.WriteString(w, `{"error":"an internal server error occurred"}`)
 	}
 }
 
 /*
-JSON changes a function into a JSONHandler.
+Handler changes a function into a JSONHandler.
 Acceptable forms of the input function:
 
-	GET (Note: all variant return types also work with POST/PATCH/PUT)
+	GET/DELETE (Note: all variant return types also work with POST/PUT/PATCH)
 	func Fn(w http.ResponseWriter, r *http.Request) (interface{}, error)
 	func Fn(w http.ResponseWriter, r *http.Request) (*MyStruct, error)
 	func Fn(w http.ResponseWriter, r *http.Request) ([]*MyStruct, error)
@@ -213,7 +229,7 @@ Acceptable forms of the input function:
 	func Fn(w http.ResponseWriter, r *http.Request, m []*MyStruct) (interface{}, error)
 	func Fn(w http.ResponseWriter, r *http.Request, m map[string]*MyStruct) (interface{}, error)
 */
-func JSON(fn interface{}) *JSONHandler {
+func Handler(fn interface{}) *JSONHandler {
 	typ := reflect.TypeOf(fn)
 	if typ.Kind() != reflect.Func {
 		panic("Can only register functions.")
