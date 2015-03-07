@@ -57,23 +57,23 @@ otherwise it will assume 200 OK. The error message will be relayed to the
 client. If you wish to use a general server error, simply return error from
 the handler.
 
-	func handler(w http.ResponseWriter, r *http.Request) {
+	func handler(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 		return nil, nil // No response from ServeHTTP, use w to create one.
 	}
 
-	func handler(w http.ResponseWriter, r *http.Request) {
+	func handler(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 		return nil, errors.New("hi") // 500 Response with cloaked+logged error.
 	}
 
-	func handler(w http.ResponseWriter, r *http.Request) {
+	func handler(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 		return nil, Err{Err: errors.New("hi")} // 200 Response with error output to client
 	}
 
-	func handler(w http.ResponseWriter, r *http.Request) {
+	func handler(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 		return nil, Err{Status: 400, Err: errors.New("hi")} // 400 Response with error output to client
 	}
 
-	func handler(w http.ResponseWriter, r *http.Request) {
+	func handler(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 		return nil, Err{
 			Status: 400,
 			Err: errors.New("hi")
